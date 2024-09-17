@@ -6,9 +6,12 @@ import os
 import google.generativeai as genai
 from dotenv import load_dotenv
 import logging
-from gtts import gTTS
-
 from logging.handlers import RotatingFileHandler
+from gtts import gTTS
+import cv2
+import numpy as np
+from paddleocr import PaddleOCR
+import paddle
 
 # Remove any existing log handlers
 logger = logging.getLogger(__name__)
@@ -38,7 +41,13 @@ load_dotenv()
 app = FastAPI()
 
 # CORS configuration
-# ... (CORS configuration code remains the same)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Get API key from environment variable
 api_key = os.getenv("API_KEY")
@@ -48,13 +57,51 @@ if not api_key:
 # Configure the API key
 genai.configure(api_key=api_key)
 
+ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+
+def perform_ocr(image_bytes: bytes) -> str:
+    try:
+        # Read the image using OpenCV
+        image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+
+        # Perform OCR on the image
+        ocr_result = ocr.ocr(image, cls=True)
+
+        # Extract text from OCR results
+        extracted_text = ""
+        for line in ocr_result:
+            for char_info in line:
+                extracted_text += char_info[1][0]
+
+        return extracted_text
+    except Exception as e:
+        logger.error(f"Error during OCR: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An error occurred during OCR")
+
+@app.post("/ocr/")
+async def ocr_single_image(file: UploadFile = File(...)):
+    try:
+        # Read the uploaded image
+        image_bytes = await file.read()
+
+        # Perform OCR on the image
+        extracted_text = perform_ocr(image_bytes)
+        logger.info(f"OCR completed. Extracted text: {extracted_text}")
+
+        return {"extracted_text": extracted_text}
+    except Exception as e:
+        logger.error(f"Error during image processing: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An error occurred during image processing")
+
 def call_generative_model(image_data):
     try:
         # Load the GenerativeModel instance with the desired model - Gemini Pro Vision
+
         model = genai.GenerativeModel('gemini-1.5-flash')
 
+
         # Define the prompt for model generation
-        prompt = "Give direct instructions for a blind person whose camera is sending you these images about the objects and their location and which direction he should move next. The image is taken from first person perspective of the blind. Give instructions by addressing the blind using 'You'. Keep it short."
+        prompt = "Give direct instructions for a blind person whose camera is sending you these images about the objects and their location. The image is taken from first person perspective of the blind. Give instructions by addressing the blind using 'You'. Keep it very short, possibly a single line with 4 or 5 words. The instructions should be in nepali. "
 
         # Generate content using the model, prompt, and image data
         response = model.generate_content(
